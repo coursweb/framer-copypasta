@@ -1,6 +1,8 @@
 # Framer Copy-Pasta
 
 ## Presse-papiers Framer
+
+-> [Lien de la page Framer Copy-Pasta](https://cours-web.ch/framer-copypasta/)
  
 Une petite page web, en un seul fichier HTML, pour **lire, stocker et recoller** les éléments copiés depuis [Framer](https://www.framer.com).
  
