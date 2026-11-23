@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Presse-papiers Framer — lecteur et bibliothèque</title>
+<style>
+  body { font-family: -apple-system, Helvetica, sans-serif; max-width: 960px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  .zone { border: 2px dashed #aaa; border-radius: 8px; padding: 1.5rem; text-align: center; color: #666; }
+  h2 { margin-top: 2rem; font-size: 1.1rem; }
+  textarea { width: 100%; height: 200px; font: 14px/1.4 Menlo, monospace; box-sizing: border-box; }
+  .layer { border-top: 1px solid #ddd; padding: .6rem 0; }
+  .meta { font-size: 12px; color: #888; }
+  img { max-width: 240px; display: block; margin-top: .4rem; border: 1px solid #eee; }
+  button { margin: .3rem .3rem 0 0; cursor: pointer; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 11px; background: #f6f6f6; padding: .5rem; max-height: 300px; overflow: auto; }
+  .svgprev { background: repeating-conic-gradient(#ddd 0 25%, #fff 0 50%) 0 0/16px 16px; display: inline-block; margin: .3rem 0; }
+  .svgprev svg { width: 80px; height: 80px; display: block; }
+  .lib { background: #f4f7f5; border-radius: 8px; padding: 1rem; margin: 1.5rem 0; }
+  .lib h2 { margin-top: 0; }
+  .clip { display: flex; align-items: center; gap: .5rem; border-top: 1px solid #dde5df; padding: .5rem 0; flex-wrap: wrap; }
+  .clip .name { flex: 1; min-width: 200px; }
+  .save { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; }
+  .save input { flex: 1; padding: .3rem; }
+  #toast { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); background: #222; color: #fff; padding: .5rem 1rem; border-radius: 6px; opacity: 0; transition: opacity .3s; pointer-events: none; }
+  #toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+<h1>Presse-papiers Framer</h1>
+<div class="zone">Copiez des éléments dans Framer, cliquez ici, puis Cmd-V</div>
+
+<div class="lib">
+  <h2>Bibliothèque de collages</h2>
+  <div id="lib"></div>
+  <button id="importBtn">Importer un fichier…</button>
+  <button id="exportAll">Tout exporter</button>
+  <input type="file" id="importFile" accept=".json,.html,.txt" multiple hidden>
+  <p class="meta">« Copier pour Framer » remet le collage dans le presse-papiers : allez ensuite dans Framer et faites Cmd-V.
+  La bibliothèque est gardée dans ce navigateur. Exportez-la en fichier pour la sauvegarder ou la partager.</p>
+</div>
+
+<div id="out"></div>
+<div id="toast"></div>
+
+<script>
+const ASSET_URL = id => `https://framerusercontent.com/images/${id}`;
+const KEY = 'framer-clips-v1';
+let current = null; // dernier collage reçu : { html, data, source }
+
+/* ---------- utilitaires ---------- */
+function esc(s) { return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('on'), 2200); }
+function download(name, content, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([content], { type }));
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function safeName(s) { return (s || 'collage').replace(/[^\w.\- àâçéèêëîïôûùüÿœ]+/gi, '_').trim().slice(0, 80) || 'collage'; }
+
+/* ---------- lecture du format Framer ---------- */
+function parsePasteboard(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const el = doc.querySelector('[data-framer-pasteboard]');
+  if (!el) return null;
+  return { data: JSON.parse(el.getAttribute('data-framer-pasteboard')), source: el.getAttribute('data-framer-pasteboard-type') || '?' };
+}
+
+function richText(html) {
+  if (!html) return '';
+  if (typeof html === 'string') {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const blocks = [...doc.body.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li')];
+    return (blocks.length ? blocks.map(b => b.textContent) : [doc.body.textContent]).join('\n').trim();
+  }
+  const lines = [];
+  (function walk(node, acc) {
+    if (node.type === 'text') { acc.push(node.text || ''); return; }
+    if (node.type === 'textBlock') { const parts = []; (node.childNodes || []).forEach(c => walk(c, parts)); lines.push(parts.join('')); return; }
+    (node.childNodes || []).forEach(c => walk(c, acc));
+  })(html, []);
+  return lines.join('\n').trim();
+}
+
+function collect(node, list, depth = 0) {
+  if (!node) return;
+  const item = { cls: node.__class, name: node.name, depth };
+  if (node.__class === 'RichTextNode') item.text = richText(node.html);
+  if (typeof node.fillImage === 'string' && node.fillImage.startsWith('data:framer/asset-reference,')) {
+    item.image = ASSET_URL(node.fillImage.split(',')[1].split('?')[0]);
+  }
+  if (typeof node.svg === 'string' && node.svg.trim()) item.svg = node.svg;
+  if (node.__class !== 'RootNode') list.push(item);
+  (node.children || []).forEach(c => collect(c, list, depth + 1));
+}
+
+function analyse(data) {
+  const items = [];
+  collect(data?.layers?.tree?.root || data?.root, items); // copie Framer ou plugin Figma
+  return items;
+}
+
+/* ---------- bibliothèque (localStorage + fichiers) ---------- */
+function loadLib() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } }
+function saveLib(lib) {
+  try { localStorage.setItem(KEY, JSON.stringify(lib)); return true; }
+  catch (e) { toast('Impossible d’enregistrer dans le navigateur : exportez en fichier.'); return false; }
+}
+
+function addClip(name, html, source) {
+  const lib = loadLib();
+  lib.unshift({ id: Date.now().toString(36), name: name || 'Sans titre', date: new Date().toISOString(), source, html });
+  if (saveLib(lib)) toast('Collage enregistré');
+  renderLib();
+}
+
+function renderLib() {
+  const lib = loadLib();
+  const box = document.getElementById('lib');
+  if (!lib.length) { box.innerHTML = '<p class="meta">Aucun collage enregistré pour l’instant.</p>'; return; }
+  box.innerHTML = lib.map(c => `
+    <div class="clip" data-id="${esc(c.id)}">
+      <div class="name"><strong>${esc(c.name)}</strong><br>
+        <span class="meta">${new Date(c.date).toLocaleString('fr-CH')} · ${esc(c.source)} · ${Math.round(c.html.length / 1024)} Ko</span></div>
+      <button data-act="copy">Copier pour Framer</button>
+      <button data-act="view">Afficher</button>
+      <button data-act="rename">Renommer</button>
+      <button data-act="file">Exporter</button>
+      <button data-act="del">Supprimer</button>
+    </div>`).join('');
+}
+
+document.getElementById('lib').addEventListener('click', e => {
+  const btn = e.target.closest('button'); if (!btn) return;
+  const id = btn.closest('.clip').dataset.id;
+  const lib = loadLib(); const clip = lib.find(c => c.id === id); if (!clip) return;
+  switch (btn.dataset.act) {
+    case 'copy': copyToClipboard(clip.html); break;
+    case 'view': show(clip.html, false); window.scrollTo({ top: document.getElementById('out').offsetTop, behavior: 'smooth' }); break;
+    case 'rename': { const n = prompt('Nouveau nom :', clip.name); if (n) { clip.name = n; saveLib(lib); renderLib(); } break; }
+    case 'file': download(safeName(clip.name) + '.framerclip.json', JSON.stringify([clip], null, 1), 'application/json'); break;
+    case 'del': if (confirm(`Supprimer « ${clip.name} » ?`)) { saveLib(lib.filter(c => c.id !== id)); renderLib(); } break;
+  }
+});
+
+document.getElementById('exportAll').onclick = () => {
+  const lib = loadLib();
+  if (!lib.length) return toast('Bibliothèque vide');
+  download('bibliotheque-framer.framerclip.json', JSON.stringify(lib, null, 1), 'application/json');
+};
+document.getElementById('importBtn').onclick = () => document.getElementById('importFile').click();
+document.getElementById('importFile').onchange = async e => {
+  let added = 0; const lib = loadLib();
+  for (const f of e.target.files) {
+    const txt = await f.text();
+    try {
+      const arr = JSON.parse(txt);
+      for (const c of (Array.isArray(arr) ? arr : [arr])) {
+        if (c && typeof c.html === 'string' && parsePasteboard(c.html)) {
+          lib.unshift({ ...c, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6) }); added++;
+        }
+      }
+    } catch {
+      // fichier HTML brut (contenu text/html du presse-papiers)
+      const p = parsePasteboard(txt);
+      if (p) { lib.unshift({ id: Date.now().toString(36) + added, name: f.name.replace(/\.[^.]+$/, ''), date: new Date().toISOString(), source: p.source, html: txt }); added++; }
+    }
+  }
+  e.target.value = '';
+  saveLib(lib); renderLib();
+  toast(added ? `${added} collage(s) importé(s)` : 'Aucun collage Framer trouvé dans ce fichier');
+};
+
+/* ---------- remettre dans le presse-papiers ---------- */
+// L'événement « copy » permet de déposer le HTML exactement tel quel (sans nettoyage par le navigateur).
+let pendingHtml = null;
+document.addEventListener('copy', e => {
+  if (pendingHtml === null) return;
+  e.preventDefault();
+  e.clipboardData.setData('text/html', pendingHtml);
+  pendingHtml = null;
+});
+function copyToClipboard(html) {
+  pendingHtml = html;
+  const ok = document.execCommand('copy');
+  if (ok && pendingHtml === null) return toast('Copié : faites Cmd-V dans Framer');
+  pendingHtml = null;
+  // solution de repli
+  if (navigator.clipboard && window.ClipboardItem) {
+    navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }) })])
+      .then(() => toast('Copié : faites Cmd-V dans Framer'))
+      .catch(err => toast('Échec de la copie : ' + err.message));
+  } else toast('Copie impossible dans ce navigateur');
+}
+
+/* ---------- affichage d'un collage ---------- */
+function show(html, fromPaste) {
+  const out = document.getElementById('out');
+  let parsed;
+  try { parsed = parsePasteboard(html); } catch (err) { out.innerHTML = `<p>JSON illisible : ${esc(err.message)}</p>`; return; }
+  if (!parsed) { out.innerHTML = '<p>Aucune donnée Framer trouvée.</p>'; return; }
+  current = { html, ...parsed };
+
+  const items = analyse(parsed.data);
+  const texts = items.filter(i => i.text).map(i => i.text);
+  const images = items.filter(i => i.image).map(i => i.image);
+  const svgs = items.filter(i => i.svg);
+  const plain = texts.join('\n\n');
+  const guess = (items.find(i => i.depth === 1)?.name || texts[0] || 'Collage').slice(0, 60);
+
+  out.innerHTML = `
+    ${fromPaste ? `<div class="save"><input id="clipName" value="${esc(guess)}">
+      <button id="saveClip">Enregistrer dans la bibliothèque</button>
+      <button id="saveFile">Exporter en fichier</button></div>` : ''}
+    <h2>Texte (${texts.length} bloc${texts.length > 1 ? 's' : ''})</h2>
+    <textarea id="plain">${esc(plain)}</textarea>
+    <button id="copyText">Copier le texte</button>
+    <h2>Images (${images.length})</h2>
+    ${images.map(u => `<div><a href="${esc(u)}" target="_blank">${esc(u)}</a><img src="${esc(u)}" alt=""></div>`).join('') || '<p class="meta">Aucune</p>'}
+    <h2>SVG (${svgs.length})</h2>
+    ${svgs.map((s, n) => `<div class="layer"><div class="meta">${esc(s.name)}</div>
+        <div class="svgprev">${s.svg}</div><br>
+        <button data-svg="${n}">Télécharger ${esc(s.name)}.svg</button></div>`).join('') || '<p class="meta">Aucun</p>'}
+    <h2>Calques <span class="meta">(format : ${esc(parsed.source)})</span></h2>
+    ${items.map(i => `<div class="layer" style="margin-left:${(i.depth - 1) * 16}px">
+        <div class="meta">${esc(i.cls)} — ${esc(i.name)}</div>
+        ${i.text ? `<div>${esc(i.text).replace(/\n/g, '<br>')}</div>` : ''}</div>`).join('')}
+    <h2>JSON complet</h2>
+    <button id="copyJson">Copier le JSON</button>
+    <pre>${esc(JSON.stringify(parsed.data, null, 2))}</pre>`;
+
+  if (fromPaste) {
+    document.getElementById('saveClip').onclick = () => addClip(document.getElementById('clipName').value.trim(), html, parsed.source);
+    document.getElementById('saveFile').onclick = () => {
+      const name = document.getElementById('clipName').value.trim() || 'Collage';
+      download(safeName(name) + '.framerclip.json',
+        JSON.stringify([{ id: Date.now().toString(36), name, date: new Date().toISOString(), source: parsed.source, html }], null, 1), 'application/json');
+    };
+  }
+  out.querySelectorAll('button[data-svg]').forEach(b => b.onclick = () => {
+    const s = svgs[+b.dataset.svg];
+    download(safeName(s.name || 'icone') + '.svg', s.svg, 'image/svg+xml');
+  });
+  document.getElementById('copyText').onclick = () => navigator.clipboard.writeText(plain).then(() => toast('Texte copié'));
+  document.getElementById('copyJson').onclick = () => navigator.clipboard.writeText(JSON.stringify(parsed.data, null, 2)).then(() => toast('JSON copié'));
+}
+
+document.addEventListener('paste', e => {
+  if (e.target.closest && e.target.closest('input, textarea')) return; // laisser coller normalement dans les champs
+  e.preventDefault();
+  const html = e.clipboardData.getData('text/html');
+  if (!html || !html.includes('data-framer-pasteboard')) {
+    document.getElementById('out').innerHTML = '<p>Aucune donnée Framer dans le presse-papiers. Types présents :</p>' +
+      [...e.clipboardData.types].map(t => `<h2>${esc(t)}</h2><pre>${esc(e.clipboardData.getData(t))}</pre>`).join('');
+    return;
+  }
+  show(html, true);
+});
+
+renderLib();
+</script>
+</body>
+</html>
