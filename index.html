@@ -21,6 +21,12 @@
   .clip .name { flex: 1; min-width: 200px; }
   .save { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; }
   .save input { flex: 1; padding: .3rem; }
+  footer { margin: 4rem 0 2rem; text-align: center; font-size: 12px; color: #999; letter-spacing: .04em; }
+  footer::before { content: ""; display: block; width: 120px; height: 6px; margin: 0 auto 1rem;
+    background: radial-gradient(circle, #8fb3a0 1.5px, transparent 2px) 0 50% / 12px 6px repeat-x; }
+  footer a { color: #5e8a73; text-decoration: none; border-bottom: 1px dotted #8fb3a0; }
+  footer a:hover { color: #285a43; border-bottom-style: solid; }
+  footer .sep { margin: 0 .5em; color: #c5d6cc; }
   #toast { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); background: #222; color: #fff; padding: .5rem 1rem; border-radius: 6px; opacity: 0; transition: opacity .3s; pointer-events: none; }
   #toast.on { opacity: 1; }
 </style>
@@ -41,6 +47,10 @@
 
 <div id="out"></div>
 <div id="toast"></div>
+
+<footer>
+  Fait à l’Eracom<span class="sep">·</span>Novembre 2026<span class="sep">·</span><a href="https://github.com/coursweb/framer-copypasta" target="_blank" rel="noopener">Voir le code sur GitHub</a>
+</footer>
 
 <script>
 const ASSET_URL = id => `https://framerusercontent.com/images/${id}`;
@@ -206,7 +216,9 @@ function show(html, fromPaste) {
   const images = items.filter(i => i.image).map(i => i.image);
   const svgs = items.filter(i => i.svg);
   const plain = texts.join('\n\n');
-  const guess = (items.find(i => i.depth === 1)?.name || texts[0] || 'Collage').slice(0, 60);
+  // Nom proposé : un seul calque de premier niveau → son nom ; sinon la première ligne de texte
+  const top = items.filter(i => i.depth === 1);
+  const guess = ((top.length === 1 && top[0].name) || (texts[0] || '').split('\n')[0] || 'Collage').trim().slice(0, 60);
 
   out.innerHTML = `
     ${fromPaste ? `<div class="save"><input id="clipName" value="${esc(guess)}">
