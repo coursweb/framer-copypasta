@@ -27,6 +27,9 @@
   footer a { color: #5e8a73; text-decoration: none; border-bottom: 1px dotted #8fb3a0; }
   footer a:hover { color: #285a43; border-bottom-style: solid; }
   footer .sep { margin: 0 .5em; color: #c5d6cc; }
+  footer .credit { display: inline-flex; align-items: center; gap: .6em; }
+  footer .avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; margin: 0;
+    border: 0; }
   #toast { position: fixed; bottom: 1rem; left: 50%; transform: translateX(-50%); background: #222; color: #fff; padding: .5rem 1rem; border-radius: 6px; opacity: 0; transition: opacity .3s; pointer-events: none; }
   #toast.on { opacity: 1; }
 </style>
@@ -49,7 +52,10 @@
 <div id="toast"></div>
 
 <footer>
-  Fait à l’Eracom<span class="sep">·</span>Novembre 2026<span class="sep">·</span><a href="https://github.com/coursweb/framer-copypasta" target="_blank" rel="noopener">Voir le code sur GitHub</a>
+  <span class="credit">
+    <img class="avatar" src="https://avatars.githubusercontent.com/u/241637?s=64" alt="" width="32" height="32">
+    <span>Fait à l’Eracom<span class="sep">·</span>Novembre 2026<span class="sep">·</span><a href="https://github.com/coursweb/framer-copypasta" target="_blank" rel="noopener">Voir le code sur GitHub</a></span>
+  </span>
 </footer>
 
 <script>
